@@ -59,3 +59,53 @@ class RedisChatMessageHistory(BaseChatMessageHistory):
     def clear(self) -> None:
         """Clear session memory from Redis"""
         self.redis_client.delete(self.key)
+
+
+class AsyncRedisChatMessageHistory(BaseChatMessageHistory):
+    def __init__(
+        self,
+        session_id: str,
+        url: str = "redis://localhost:6379/0",
+        key_prefix: str = "message_store:",
+        ttl: Optional[int] = None,
+    ):
+        try:
+            from redis import asyncio as aredis
+            from redis import exceptions
+        except ImportError:
+            raise ImportError(
+                "Could not import redis python package. "
+                "Please install it with `pip install redis`."
+            )
+
+        try:
+            self.redis_client = aredis.Redis.from_url(url=url)
+        except exceptions.ConnectionError as error:
+            logger.error(error)
+
+        self.session_id = session_id
+        self.key_prefix = key_prefix
+        self.ttl = ttl
+
+    @property
+    def key(self) -> str:
+        """Construct the record key to use"""
+        return self.key_prefix + self.session_id
+
+    @property
+    async def messages(self) -> List[BaseMessage]:  # type: ignore
+        """Retrieve the messages from Redis"""
+        _items = await self.redis_client.lrange(self.key, 0, -1)
+        items = [json.loads(m.decode("utf-8")) for m in _items[::-1]]
+        messages = messages_from_dict(items)
+        return messages
+
+    async def add_message(self, message: BaseMessage) -> None:
+        """Append the message to the record in Redis"""
+        await self.redis_client.lpush(self.key, json.dumps(_message_to_dict(message)))
+        if self.ttl:
+            await self.redis_client.expire(self.key, self.ttl)
+
+    async def clear(self) -> None:
+        """Clear session memory from Redis"""
+        await self.redis_client.delete(self.key)
